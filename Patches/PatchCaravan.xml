@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Patch>
+	<Operation Class="PatchOperationReplace">
+	  <xpath>/Defs/DutyDef/thinkNode[@Class="ThinkNode_Priority"]/subNodes/li[@Class="ThinkNode_ConditionalPrisonerInPrisonCell"]/subNodes/li[@Class="JobGiver_WanderCurrentRoom"]</xpath>
+	  <value>
+	  	<!-- replaces JobGiver_WanderCurrentRoom, which has a bug that allows prisoners to leave their cells -->
+		<li Class="BillysCaravanFormation.JobGiver_WanderPrisonCell"/>
+	  </value>
+	</Operation> 
+</Patch>

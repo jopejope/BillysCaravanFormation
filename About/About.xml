@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ModMetaData>
+	<name>Billy's Improved Caravan Formation</name>
+	<author>Billy Martin</author>
+	<targetVersion>0.17.1557</targetVersion>
+	<description>Colonists behave more intelligently during caravan formation, spending more time usefully gathering supplies and less time wandering around doing nothing.</description>
+</ModMetaData>

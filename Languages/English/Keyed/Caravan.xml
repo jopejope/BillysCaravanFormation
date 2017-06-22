@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<LanguageData>
+	<BillyCaravanLacksColonist>{0} can no longer join the caravan. There are no colonists to lead the caravan.</BillyCaravanLacksColonist>
+	<BillyCaravanLeavesWithout>The caravan will leave without {0}, since {1} can no longer join.</BillyCaravanLeavesWithout>
+	<BillyCaravanLacksCapacity>{0} can no longer join the caravan, and it cannot carry its supplies without {2}.</BillyCaravanLacksCapacity>
+</LanguageData>
