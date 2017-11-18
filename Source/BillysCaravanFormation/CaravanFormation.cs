@@ -20,6 +20,14 @@ namespace BillysCaravanFormation
         //   - Colonists can start gathering items immediately without waiting for the animals to gather
         //   - Only waits for pack animals before moving on to the next step
 
+        public override bool AllowRestingInBed
+        {
+            get
+            {
+                return true;
+            }
+        }
+
         protected virtual IntVec3 MeetingPoint
         {
             get
@@ -56,8 +64,7 @@ namespace BillysCaravanFormation
                 else if (pawn.RaceProps.Animal && pawn.RaceProps.packAnimal)
                 {
                     // pack animals goto meeting point
-                    pawn.mindState.duty = new PawnDuty(DutyDefOf.Travel, MeetingPoint, -1f);
-                    pawn.mindState.duty.locomotion = LocomotionUrgency.Jog;
+                    pawn.mindState.duty = new PawnDuty(DutyDefOf.PrepareCaravan_Wait, MeetingPoint, -1f);
                 }
                 else if (!pawn.RaceProps.Animal)
                 {
@@ -88,6 +95,14 @@ namespace BillysCaravanFormation
         //    so that if a prisoner wanders off to get food it will still count as gathered
         //    without having to wait for all of them to reach the meeting spot at once.
 
+        public override bool AllowRestingInBed
+        {
+            get
+            {
+                return true;
+            }
+        }
+
         protected virtual IntVec3 MeetingPoint
         {
             get
@@ -117,6 +132,38 @@ namespace BillysCaravanFormation
             {
                 (data as LordToilData_BillyCaravan_GatherPawns).CheckGathered(lord, "AllSlavesGathered", IsPawnToBeGathered, true);
             }
+        }
+    }
+
+    public class LordToil_BillyCaravan_GatherItems : LordToil_PrepareCaravan_GatherItems
+    {
+        public override bool AllowRestingInBed
+        {
+            get
+            {
+                return true;
+            }
+        }
+
+        public LordToil_BillyCaravan_GatherItems(IntVec3 meetingPoint)
+            : base(meetingPoint)
+        {
+        }
+    }
+
+    public class LordToil_BillyCaravan_Wait : LordToil_PrepareCaravan_Wait
+    {
+        public override bool AllowRestingInBed
+        {
+            get
+            {
+                return true;
+            }
+        }
+
+        public LordToil_BillyCaravan_Wait(IntVec3 meetingPoint)
+            : base(meetingPoint)
+        {
         }
     }
 
@@ -274,10 +321,12 @@ namespace BillysCaravanFormation
             // these states will replace the corrisponding states in the original state machine.
             LordToil_BillyCaravan_GatherItemsAndPackAnimals gatherpackanimals = new LordToil_BillyCaravan_GatherItemsAndPackAnimals(meetingPoint);
             LordToil_PrepareCaravan_Pause pause_gatherpackanimals = new LordToil_PrepareCaravan_Pause();
-            LordToil_PrepareCaravan_GatherItems gatheritems = new LordToil_PrepareCaravan_GatherItems(meetingPoint);
+            LordToil_BillyCaravan_GatherItems gatheritems = new LordToil_BillyCaravan_GatherItems(meetingPoint);
             LordToil_PrepareCaravan_Pause pause_gatheritems = new LordToil_PrepareCaravan_Pause();
             LordToil_BillyCaravan_GatherSlaves gatherslaves = new LordToil_BillyCaravan_GatherSlaves(meetingPoint);
             LordToil_PrepareCaravan_Pause pause_gatherslaves = new LordToil_PrepareCaravan_Pause();
+            LordToil_BillyCaravan_Wait wait = new LordToil_BillyCaravan_Wait(meetingPoint);
+            LordToil_PrepareCaravan_Pause pause_wait = new LordToil_PrepareCaravan_Pause();
 
             // we have to set this variable so the game will know when we're in the Gathering Items phase.
             // sometimes while in this phase it likes to let other colonists (not assigned to the caravan) help with the loading process.
@@ -288,9 +337,11 @@ namespace BillysCaravanFormation
             __result.StartingToil = gatherpackanimals;
             __result.AddToil(gatheritems);
             __result.AddToil(gatherslaves);
+            __result.AddToil(wait);
             __result.AddToil(pause_gatherpackanimals);
             __result.AddToil(pause_gatheritems);
             __result.AddToil(pause_gatherslaves);
+            __result.AddToil(pause_wait);
 
             // adds the new states to the transition that ends the caravan forming process when an important pawn is incapacitated
             Transition endIfPawnLost = __result.transitions[0];
@@ -300,6 +351,8 @@ namespace BillysCaravanFormation
             endIfPawnLost.AddSource(pause_gatheritems);
             endIfPawnLost.AddSource(gatherslaves);
             endIfPawnLost.AddSource(pause_gatherslaves);
+            endIfPawnLost.AddSource(wait);
+            endIfPawnLost.AddSource(pause_wait);
             
             // this replaces the failure condition from losing any pawn to only fail if the caravan lacks sufficient capacity or has no colonists
             endIfPawnLost.triggers.Clear();
@@ -312,17 +365,21 @@ namespace BillysCaravanFormation
             // 3. gather Prisoners
             // 4. wait for every member of the caravan to be sufficiently rested
             // 5. walk to the edge of the map and leave
-            // the last two steps are already in the original StateGraph, so we just have to add the first three and their transitions here
-            // The order above is the same as in the base game, we're simply replacing steps 1 and 3 with our improved versions.
+            // the last step is already in the original StateGraph, so we just have to add the first four and their transitions here
+            // The order above is the same as in the base game, we're simply replacing steps 1 thru 4 with our improved versions.
             Transition doneAnimals = new Transition(gatherpackanimals, gatheritems);
             doneAnimals.AddTrigger(new Trigger_Memo("AllAnimalsGathered"));
             Transition doneItems = new Transition(gatheritems, gatherslaves);
             doneItems.AddTrigger(new Trigger_Memo("AllItemsGathered"));
-            Transition doneSlaves = new Transition(gatherslaves, __result.lordToils.Find((LordToil lt) => lt is LordToil_PrepareCaravan_Wait));
+            Transition doneSlaves = new Transition(gatherslaves, wait);
             doneSlaves.AddTrigger(new Trigger_Memo("AllSlavesGathered"));
+            Transition doneWait = new Transition(wait, __result.lordToils.Find((LordToil lt) => lt is LordToil_PrepareCaravan_Leave));
+            doneWait.AddTrigger(new Trigger_NoPawnsVeryTiredAndSleeping(0f));
+            doneWait.AddPostAction(new TransitionAction_WakeAll());
             __result.AddTransition(doneAnimals);
             __result.AddTransition(doneItems);
             __result.AddTransition(doneSlaves);
+            __result.AddTransition(doneWait);
 
             // These transitions pause the caravan if a colonist or animal has a mental break.
             // Every caravan forming state has a corrisponding pause state, so that the state machine can remember where it was
@@ -333,6 +390,8 @@ namespace BillysCaravanFormation
             __result.AddTransition(tthis.Method("UnpauseTransition", new object[] { pause_gatheritems, gatheritems }).GetValue<Transition>());
             __result.AddTransition(tthis.Method("PauseTransition", new object[] { gatherslaves, pause_gatherslaves }).GetValue<Transition>());
             __result.AddTransition(tthis.Method("UnpauseTransition", new object[] { pause_gatherslaves, gatherslaves }).GetValue<Transition>());
+            __result.AddTransition(tthis.Method("PauseTransition", new object[] { wait, pause_wait }).GetValue<Transition>());
+            __result.AddTransition(tthis.Method("UnpauseTransition", new object[] { pause_wait, wait }).GetValue<Transition>());
 
             // Set autoFlee to false for the player faction, otherwise the caravan "flees" if it loses half its members.
             if (__instance.lord.faction.def.isPlayer) __instance.lord.faction.def.autoFlee = false;
@@ -358,34 +417,21 @@ namespace BillysCaravanFormation
                 string genderpronounobj = p.gender == Gender.Male ? "ProhimObj".Translate() : p.gender == Gender.Female ? "ProherObj".Translate() : "ProitObj".Translate();
                 if (!__instance.StillHasColonist())
                 {
-                    Messages.Message("BillyCaravanLacksColonist".Translate(new object[] { p.NameStringShort, genderpronounsubj, genderpronounobj }), p, MessageSound.Negative);
+                    Messages.Message("BillyCaravanLacksColonist".Translate(new object[] { p.NameStringShort, genderpronounsubj, genderpronounobj }), p, MessageTypeDefOf.NegativeEvent);
                     __instance.lord.ReceiveMemo("BillyCaravanCriticalPawnLost");
                 }
                 else if (__instance.StillHasEnoughCapacity())
                 {
-                    
-                    Messages.Message("BillyCaravanLeavesWithout".Translate(new object[] { p.NameStringShort, genderpronounsubj, genderpronounobj }), p, MessageSound.Negative);
+
+                    Messages.Message("BillyCaravanLeavesWithout".Translate(new object[] { p.NameStringShort, genderpronounsubj, genderpronounobj }), p, MessageTypeDefOf.NegativeEvent);
                 }
                 else
                 {
-                    
-                    Messages.Message("BillyCaravanLacksCapacity".Translate(new object[] { p.NameStringShort, genderpronounsubj, genderpronounobj }), p, MessageSound.Negative);
+
+                    Messages.Message("BillyCaravanLacksCapacity".Translate(new object[] { p.NameStringShort, genderpronounsubj, genderpronounobj }), p, MessageTypeDefOf.NegativeEvent);
                     __instance.lord.ReceiveMemo("BillyCaravanCriticalPawnLost");
                 }
             }
-        }
-    }
-
-    public class CaravanModInit : Verse.Mod
-    {
-        public CaravanModInit(ModContentPack content)
-            : base(content)
-        {
-            // this should be executed when Rimworld loads our mod (because the class inherits from Verse.Mod). 
-            // The code below tells Harmony to apply the patches attributed above.
-            var harmony = HarmonyInstance.Create("bem.rimworld.mod.billy.smartcaravan");
-            harmony.PatchAll(Assembly.GetExecutingAssembly());
-            
         }
     }
 }
