@@ -13,22 +13,68 @@ using System.Reflection;
 
 namespace BillysCaravanFormation
 {
-    public class LordToil_BillyCaravan_GatherItemsAndPackAnimals : LordToil_PrepareCaravan_GatherAnimals
+    /*
+     * WTF is going on here?
+     * 
+     * Fundamentally this mod is replacing some of the native Caravan Formation code in Rimworld.
+     * For every class with code that I am replacing, I have written a class (below) that inherits from the
+     * class that I want to replace. Elsewhere, I will tell Rimworld to use my classes instead of the original
+     * classes. Because I'm inheriting from the original classes, I only have to write the code that I am modifying.
+     * Everything else will get 'inherited' from the original class.
+     * 
+     * The first line of the class tells you what original class I am inheriting from, and therefore what class I
+     * am modifying/replacing. C# uses the colon : to denote inheritance (just like in C++). So for example this first
+     * class is modifying and replacing LordToil_PrepareCaravan_GatherAnimals. You will have to use ILSpy to decompile
+     * the Rimworld code in "Assembly-CSharp.dll" and then search for "LordToil_PrepareCaravan_GatherAnimals" to find
+     * the original code and see how it works. In fact, you can search the original code for just "Caravan" and get nearly
+     * all the code that relates to caravan formation. The decompiled source code is surprisingly easy to read and
+     * understand so it won't take too long to get a basic understanding of what is going on.
+     * 
+     * The first thing you will have to learn is what the hell is a "LordToil". One thing that is a bit confusing about
+     * the Rimworld source is that the developers like to use basically synonomous words to refer to completely different
+     * things related to the same overall concept. There are LordToils and LordJobs, for example. Totally different. What
+     * is a LordJob? Let's not worry about that right now.
+     * 
+     * A LordToil is a state that a 'Lord' can be in that describes what the Lord should be doing at this very moment. A Lord
+     * orchistrates a group of pawns as they do some complex job together (such as forming a caravan). the Lord will switch from 
+     * one LordToil to the next, according to a state machine that describes how to do the whole job. So each LordToil is one
+     * state in this state machine, and the pawns must keep working on the same LordToil until it tells the Lord to transition
+     * to the next state.
+     *
+     * The LordToil has a function "UpdateAllDuties" which tells all the Pawns controlled by the Lord what they need to do.
+     * This is done by assigning each pawn a PawnDuty. What is a PawnDuty? Well, we don't have to worry about that, because
+     * we don't need to be modifying any code at that level. The individual duties for pawns during caravan formation work
+     * great. The only reason caravan formation breaks is because the Lord gets stuck in certain states and doesn't know when
+     * to move on to the next state. All we have to do is fix the LordToils (the states) so that they can proceed smoothly
+     * even when forming a large caravan.
+     * 
+     * The LordToil also has a function "LordToilTick" that checks often if we are done with this Toil and can move on to
+     * the next state. This is where caravan formation would often break as a toil would wait for all pawns to be close to
+     * the meeting point, but the problem is pawns would get hungry and wander off after getting to the meeting point, and
+     * then while that was happening another pawn would get hungry, and so on, so the caravan would never move on to the
+     * next step.
+     * 
+     * We fix this by adding a "LordToilData" to each LordToil that has to wait for all pawns to gather. Instead of waiting
+     * for every pawn to be in position at the same time, it simply tracks when a pawn has made it to the meeting point, and
+     * if that has happened ONCE for each pawn then that is sufficient for us to move on. Now, if a hungry pawn wanders off,
+     * it doesn't delay the caravan since that pawn is already counted as having been at the meeting point.
+     */
+
+    public class LordToil_BillyCaravan_GatherAnimals : LordToil_PrepareCaravan_GatherAnimals
     {
         // Improvements for this class:
-        //   - Animals head to the caravan spot on their own, no need to be tagged by a colonist
-        //   - Colonists can start gathering items immediately without waiting for the animals to gather
-        //   - Only waits for pack animals before moving on to the next step
+        //   - Tracks gathered pawns with LordToilData so pawns that wander off for food will not delay the caravan
+        //   - This step can be skipped with the fastAnimalCollection setting.
 
-        public override bool AllowRestingInBed
+        static bool IsFastAnimalCollectionEnabled
         {
             get
             {
-                return true;
+                return LoadedModManager.GetMod<CaravanModInit>().GetSettings<CaravanModSettings>().fastAnimalCollection;
             }
         }
 
-        protected virtual IntVec3 MeetingPoint
+        public virtual IntVec3 MeetingPoint
         {
             get
             {
@@ -38,52 +84,44 @@ namespace BillysCaravanFormation
             {
                 (data as LordToilData_BillyCaravan_GatherPawns).meetingPoint = value;
                 (data as LordToilData_BillyCaravan_GatherPawns).gatheredPawns.Clear();
-            } 
+            }
         }
 
-        public LordToil_BillyCaravan_GatherItemsAndPackAnimals(IntVec3 meetingPoint) : base(meetingPoint)
+        public LordToil_BillyCaravan_GatherAnimals(IntVec3 meetingPoint) : base(meetingPoint)
         {
             this.data = new LordToilData_BillyCaravan_GatherPawns(meetingPoint);
         }
 
-        static bool IsPawnToBeGathered(Pawn p)
-        {
-            return p.RaceProps.Animal && p.RaceProps.packAnimal;
-        }
-
         public override void UpdateAllDuties()
         {
-            for (int i = 0; i < this.lord.ownedPawns.Count; i++)
+            for (int i = 0; i < lord.ownedPawns.Count; i++)
             {
-                Pawn pawn = this.lord.ownedPawns[i];
-                if (pawn.IsColonist)
+                Pawn pawn = lord.ownedPawns[i];
+                if (pawn.IsColonist || pawn.RaceProps.Animal)
                 {
-                    // colonists can start gathering items right away
-                    pawn.mindState.duty = new PawnDuty(DutyDefOf.PrepareCaravan_GatherItems);
-                }
-                else if (pawn.RaceProps.Animal && pawn.RaceProps.packAnimal)
-                {
-                    // pack animals goto meeting point
-                    pawn.mindState.duty = new PawnDuty(DutyDefOf.PrepareCaravan_Wait, MeetingPoint, -1f);
-                }
-                else if (!pawn.RaceProps.Animal)
-                {
-                    // prisoners wait (they will be gathered in a later step)
-                    pawn.mindState.duty = new PawnDuty(DutyDefOf.PrepareCaravan_Wait);
+                    pawn.mindState.duty = new PawnDuty(DutyDefOf.PrepareCaravan_GatherPawns, MeetingPoint);
+                    pawn.mindState.duty.pawnsToGather = PawnsToGather.Animals;
                 }
                 else
                 {
-                    // other pawns go wait at the meeting point
-                    pawn.mindState.duty = new PawnDuty(DutyDefOf.PrepareCaravan_Wait, MeetingPoint, -1f);
+                    pawn.mindState.duty = new PawnDuty(DutyDefOf.PrepareCaravan_Wait);
                 }
             }
         }
 
         public override void LordToilTick()
         {
+            const string toilCompleteMemo = "AllAnimalsGathered";
             if (Find.TickManager.TicksGame % 100 == 0)
             {
-                (data as LordToilData_BillyCaravan_GatherPawns).CheckGathered(lord, "AllAnimalsGathered", IsPawnToBeGathered, false);
+                if (IsFastAnimalCollectionEnabled)
+                {
+                    lord.ReceiveMemo(toilCompleteMemo);
+                }
+                else
+                {
+                    (data as LordToilData_BillyCaravan_GatherPawns).CheckGathered(lord, toilCompleteMemo, (Pawn x) => x.RaceProps.Animal, true);
+                }
             }
         }
     }
@@ -91,17 +129,7 @@ namespace BillysCaravanFormation
     public class LordToil_BillyCaravan_GatherSlaves : LordToil_PrepareCaravan_GatherSlaves
     {
         // Improvements for this class:
-        //  - Uses the GatherPawns data to keep track of prisoners that have been gathered,
-        //    so that if a prisoner wanders off to get food it will still count as gathered
-        //    without having to wait for all of them to reach the meeting spot at once.
-
-        public override bool AllowRestingInBed
-        {
-            get
-            {
-                return true;
-            }
-        }
+        //   - Tracks gathered pawns with LordToilData so pawns that wander off for food will not delay the caravan
 
         protected virtual IntVec3 MeetingPoint
         {
@@ -113,7 +141,7 @@ namespace BillysCaravanFormation
             {
                 (data as LordToilData_BillyCaravan_GatherPawns).meetingPoint = value;
                 (data as LordToilData_BillyCaravan_GatherPawns).gatheredPawns.Clear();
-            } 
+            }
         }
 
         public LordToil_BillyCaravan_GatherSlaves(IntVec3 meetingPoint) : base(meetingPoint)
@@ -121,51 +149,32 @@ namespace BillysCaravanFormation
             this.data = new LordToilData_BillyCaravan_GatherPawns(meetingPoint);
         }
 
-        static bool IsPawnToBeGathered(Pawn p)
+        public override void UpdateAllDuties()
         {
-            return !p.IsColonist && !p.RaceProps.Animal;
+            for (int i = 0; i < lord.ownedPawns.Count; i++)
+            {
+                Pawn pawn = lord.ownedPawns[i];
+                if (!pawn.RaceProps.Animal)
+                {
+                    pawn.mindState.duty = new PawnDuty(DutyDefOf.PrepareCaravan_GatherPawns, MeetingPoint);
+                    pawn.mindState.duty.pawnsToGather = PawnsToGather.Slaves;
+                }
+                else
+                {
+                    pawn.mindState.duty = new PawnDuty(DutyDefOf.PrepareCaravan_Wait, MeetingPoint);
+                }
+            }
         }
 
         public override void LordToilTick()
         {
             if (Find.TickManager.TicksGame % 100 == 0)
             {
-                (data as LordToilData_BillyCaravan_GatherPawns).CheckGathered(lord, "AllSlavesGathered", IsPawnToBeGathered, true);
+                (data as LordToilData_BillyCaravan_GatherPawns).CheckGathered(lord, "AllSlavesGathered", (Pawn x) => !x.IsColonist && !x.RaceProps.Animal, true);
             }
         }
     }
 
-    public class LordToil_BillyCaravan_GatherItems : LordToil_PrepareCaravan_GatherItems
-    {
-        public override bool AllowRestingInBed
-        {
-            get
-            {
-                return true;
-            }
-        }
-
-        public LordToil_BillyCaravan_GatherItems(IntVec3 meetingPoint)
-            : base(meetingPoint)
-        {
-        }
-    }
-
-    public class LordToil_BillyCaravan_Wait : LordToil_PrepareCaravan_Wait
-    {
-        public override bool AllowRestingInBed
-        {
-            get
-            {
-                return true;
-            }
-        }
-
-        public LordToil_BillyCaravan_Wait(IntVec3 meetingPoint)
-            : base(meetingPoint)
-        {
-        }
-    }
 
     public class LordToilData_BillyCaravan_GatherPawns : LordToilData
     {
@@ -227,10 +236,11 @@ namespace BillysCaravanFormation
             for (int i = 0; i < lord.ownedPawns.Count; i++)
             {
                 Pawn pawn = lord.ownedPawns[i];
-                if (shouldCheck(pawn) && 
-                    (!validateFollow || GatherAnimalsAndSlavesForCaravanUtility.IsFollowingAnyone(pawn)) && 
-                    pawn.Position.InHorDistOf(meetingPoint, 10f) && 
-                    pawn.CanReach(meetingPoint, PathEndMode.ClosestTouch, Danger.Deadly, false, TraverseMode.ByPawn))
+                if (shouldCheck(pawn) &&
+                    (!validateFollow || GatherAnimalsAndSlavesForCaravanUtility.IsFollowingAnyone(pawn)) &&
+                    pawn.Spawned &&
+                    pawn.Position.InHorDistOf(meetingPoint, 10f) &&
+                    pawn.CanReach(meetingPoint, PathEndMode.ClosestTouch, Danger.Deadly))
                 {
                     SetGathered(pawn);
                 }
@@ -242,62 +252,32 @@ namespace BillysCaravanFormation
         }
     }
 
-    public static class ExtendLordJob_FormAndSendCaravan
+    public static class Extend_Transition
     {
-        public static bool StillHasEnoughCapacity(this LordJob_FormAndSendCaravan self)
+        public static Transition ReplaceState(this Transition self, LordToil old_state, LordToil new_state)
         {
-            // here we check the capacity of the caravan after a pawn is lost. We have to count all the stuff still waiting to be loaded
-            // plus the stuff already loaded. Note that the caravan dialog code uses IgnoreIfAssignedToUnload to count loaded inventory
-            // but I think that's a mistake because it allows you to create overloaded caravans by loading some stuff, then cancelling,
-            // then forming the caravan again.
-            float massLeftToTransfer = CollectionsMassCalculator.MassUsageTransferables(self.transferables, IgnorePawnsInventoryMode.DontIgnore, false, false);
-            float massAlreadyTransfered = CollectionsMassCalculator.MassUsage(self.lord.ownedPawns, IgnorePawnsInventoryMode.DontIgnore, false, false);
-            float totalMass = massLeftToTransfer + massAlreadyTransfered;
-            float totalCapacity = CollectionsMassCalculator.Capacity(self.lord.ownedPawns);
-            //Debug.Log("Checking Caravan Capacity: " + totalMass + "/" + totalCapacity);
-            return totalMass <= totalCapacity;
-        }
-
-        public static bool StillHasColonist(this LordJob_FormAndSendCaravan self)
-        {
-            foreach (Pawn p in self.lord.ownedPawns)
-            {
-                if (p.IsColonist) return true;
-            }
-            return false;
+            if (self.target == old_state) self.target = new_state;
+            int index = self.sources.IndexOf(old_state);
+            if (index != -1) self.sources[index] = new_state;
+            return self;
         }
     }
 
-    public class JobGiver_WanderPrisonCell : JobGiver_WanderCurrentRoom
+    public static class Extend_StateGraph
     {
-        // This class replaces JobGiver_WanderCurrentRoom for prisoners in caravans in the caravan duties defs.
-        // It is added to the game by PatchCaravan.xml in the Patches folder.
-        protected override IntVec3 GetExactWanderDest(Pawn pawn)
+        public static StateGraph ReplaceState(this StateGraph self, LordToil old_state, LordToil new_state)
         {
-            // the class JobGiver_WanderCurrentRoom is not very strict about keeping prisoners in their cells.
-            // this one makes sure the wander locations really stay within the cell
-            IntVec3 wanderRoot = this.GetWanderRoot(pawn);
-            IntVec3 wanderDest = wanderRoot;
-            for (int i = 0; i < 20; i++)
+            int index = self.lordToils.IndexOf(old_state);
+            while(index != -1)
             {
-                wanderDest = RCellFinder.RandomWanderDestFor(pawn, wanderRoot, this.wanderRadius, this.wanderDestValidator, PawnUtility.ResolveMaxDanger(pawn, this.maxDanger));
-                bool destOk = WanderRoomUtility.IsValidWanderDest(pawn, wanderDest, wanderRoot);
-                if (DebugViewSettings.drawDestSearch)
-                {
-                    pawn.Map.debugDrawer.FlashCell(wanderRoot, 0.6f, "PC root");
-                    if (destOk)
-                    {
-                        pawn.Map.debugDrawer.FlashCell(wanderDest, 0.9f, "dest OK");
-                    }
-                    else
-                    {
-                        pawn.Map.debugDrawer.FlashCell(wanderDest, 0.9f, "dest BAD");
-                    }
-                }
-                if (destOk) return wanderDest;
+                self.lordToils[index] = new_state;
+                index = self.lordToils.IndexOf(old_state);
             }
-            // if we haven't found a good destination by now, probably the prisoner is in a very small cell and doesn't have room to wander.
-            return wanderRoot;
+            for(int i = 0; i < self.transitions.Count; ++i)
+            {
+                self.transitions[i] = self.transitions[i].ReplaceState(old_state, new_state);
+            }
+            return self;
         }
     }
 
@@ -316,122 +296,24 @@ namespace BillysCaravanFormation
             Traverse tthis = Traverse.Create(__instance);
             IntVec3 meetingPoint = tthis.Field("meetingPoint").GetValue<IntVec3>();
 
-            // here we create new states to add to the state machine.
-            // We're adding three new caravan forming states, along with three corrisponding pause states (see below)
-            // these states will replace the corrisponding states in the original state machine.
-            LordToil_BillyCaravan_GatherItemsAndPackAnimals gatherpackanimals = new LordToil_BillyCaravan_GatherItemsAndPackAnimals(meetingPoint);
-            LordToil_PrepareCaravan_Pause pause_gatherpackanimals = new LordToil_PrepareCaravan_Pause();
-            LordToil_BillyCaravan_GatherItems gatheritems = new LordToil_BillyCaravan_GatherItems(meetingPoint);
-            LordToil_PrepareCaravan_Pause pause_gatheritems = new LordToil_PrepareCaravan_Pause();
-            LordToil_BillyCaravan_GatherSlaves gatherslaves = new LordToil_BillyCaravan_GatherSlaves(meetingPoint);
-            LordToil_PrepareCaravan_Pause pause_gatherslaves = new LordToil_PrepareCaravan_Pause();
-            LordToil_BillyCaravan_Wait wait = new LordToil_BillyCaravan_Wait(meetingPoint);
-            LordToil_PrepareCaravan_Pause pause_wait = new LordToil_PrepareCaravan_Pause();
+            // All we need to do is replace the GatherAnimals and GatherSlaves LordToils with our versions.
 
-            // we have to set this variable so the game will know when we're in the Gathering Items phase.
-            // sometimes while in this phase it likes to let other colonists (not assigned to the caravan) help with the loading process.
-            tthis.Field("gatherItems").SetValue(gatheritems);
-           
-            // We put our gatherpackanimals state as the new starting state. It will transition to our other states.
-            // There is no need to remove the original states, they will now simply be unreachable.
-            __result.StartingToil = gatherpackanimals;
-            __result.AddToil(gatheritems);
-            __result.AddToil(gatherslaves);
-            __result.AddToil(wait);
-            __result.AddToil(pause_gatherpackanimals);
-            __result.AddToil(pause_gatheritems);
-            __result.AddToil(pause_gatherslaves);
-            __result.AddToil(pause_wait);
+            // OLD VERSIONS
+            LordToil oldGatherAnimals = tthis.Field("gatherAnimals").GetValue<LordToil>();
+            LordToil oldGatherSlaves = tthis.Field("gatherSlaves").GetValue<LordToil>();
 
-            // adds the new states to the transition that ends the caravan forming process when an important pawn is incapacitated
-            Transition endIfPawnLost = __result.transitions[0];
-            endIfPawnLost.AddSource(gatherpackanimals);
-            endIfPawnLost.AddSource(pause_gatherpackanimals);
-            endIfPawnLost.AddSource(gatheritems);
-            endIfPawnLost.AddSource(pause_gatheritems);
-            endIfPawnLost.AddSource(gatherslaves);
-            endIfPawnLost.AddSource(pause_gatherslaves);
-            endIfPawnLost.AddSource(wait);
-            endIfPawnLost.AddSource(pause_wait);
-            
-            // this replaces the failure condition from losing any pawn to only fail if the caravan lacks sufficient capacity or has no colonists
-            endIfPawnLost.triggers.Clear();
-            endIfPawnLost.AddTrigger(new Trigger_Memo("BillyCaravanCriticalPawnLost"));
+            // OUR NEW VERSIONS
+            LordToil_BillyCaravan_GatherAnimals billyGatherAnimals = new LordToil_BillyCaravan_GatherAnimals(meetingPoint);
+            LordToil_BillyCaravan_GatherSlaves billyGatherSlaves = new LordToil_BillyCaravan_GatherSlaves(meetingPoint);
 
-            // here we insert the transitions for our new states.
-            // the general order of operations is:
-            // 1. gather Animals
-            // 2. gather Items
-            // 3. gather Prisoners
-            // 4. wait for every member of the caravan to be sufficiently rested
-            // 5. walk to the edge of the map and leave
-            // the last step is already in the original StateGraph, so we just have to add the first four and their transitions here
-            // The order above is the same as in the base game, we're simply replacing steps 1 thru 4 with our improved versions.
-            Transition doneAnimals = new Transition(gatherpackanimals, gatheritems);
-            doneAnimals.AddTrigger(new Trigger_Memo("AllAnimalsGathered"));
-            Transition doneItems = new Transition(gatheritems, gatherslaves);
-            doneItems.AddTrigger(new Trigger_Memo("AllItemsGathered"));
-            Transition doneSlaves = new Transition(gatherslaves, wait);
-            doneSlaves.AddTrigger(new Trigger_Memo("AllSlavesGathered"));
-            Transition doneWait = new Transition(wait, __result.lordToils.Find((LordToil lt) => lt is LordToil_PrepareCaravan_Leave));
-            doneWait.AddTrigger(new Trigger_NoPawnsVeryTiredAndSleeping(0f));
-            doneWait.AddPostAction(new TransitionAction_WakeAll());
-            __result.AddTransition(doneAnimals);
-            __result.AddTransition(doneItems);
-            __result.AddTransition(doneSlaves);
-            __result.AddTransition(doneWait);
+            // REPLACE member variables with new versions
+            tthis.Field("gatherAnimals").SetValue(billyGatherAnimals);
+            tthis.Field("gatherSlaves").SetValue(billyGatherSlaves);
 
-            // These transitions pause the caravan if a colonist or animal has a mental break.
-            // Every caravan forming state has a corrisponding pause state, so that the state machine can remember where it was
-            // when it unpauses. We had to create pause-states for each of our new states, and here we add the transitions.
-            __result.AddTransition(tthis.Method("PauseTransition", new object[] { gatherpackanimals, pause_gatherpackanimals }).GetValue<Transition>());
-            __result.AddTransition(tthis.Method("UnpauseTransition", new object[] { pause_gatherpackanimals, gatherpackanimals }).GetValue<Transition>());
-            __result.AddTransition(tthis.Method("PauseTransition", new object[] { gatheritems, pause_gatheritems } ).GetValue<Transition>());
-            __result.AddTransition(tthis.Method("UnpauseTransition", new object[] { pause_gatheritems, gatheritems }).GetValue<Transition>());
-            __result.AddTransition(tthis.Method("PauseTransition", new object[] { gatherslaves, pause_gatherslaves }).GetValue<Transition>());
-            __result.AddTransition(tthis.Method("UnpauseTransition", new object[] { pause_gatherslaves, gatherslaves }).GetValue<Transition>());
-            __result.AddTransition(tthis.Method("PauseTransition", new object[] { wait, pause_wait }).GetValue<Transition>());
-            __result.AddTransition(tthis.Method("UnpauseTransition", new object[] { pause_wait, wait }).GetValue<Transition>());
-
-            // Set autoFlee to false for the player faction, otherwise the caravan "flees" if it loses half its members.
-            if (__instance.lord.faction.def.isPlayer) __instance.lord.faction.def.autoFlee = false;
+            // REPLACE states in state machine with new versions
+            __result = __result.ReplaceState(oldGatherAnimals, billyGatherAnimals);
+            __result = __result.ReplaceState(oldGatherSlaves, billyGatherSlaves);
         }
     }
 
-    [HarmonyPatch(typeof(LordJob_FormAndSendCaravan))]
-    [HarmonyPatch("Notify_PawnLost")]
-    public class PatchLordJob_FormAndSendCaravan_Notify_PawnLost
-    {
-        [HarmonyPrefix]
-        static void Prefix(LordJob_FormAndSendCaravan __instance, Pawn p, PawnLostCondition condition)
-        {
-            // This function checks whether the caravan can continue without a downed pawn.
-            // We're lucky that the original LordJob_FormAndSendCaravan overrode the Notify_PawnLost function,
-            // so we're able to patch it with this code.
-            Traverse tthis = Traverse.Create(__instance);
-            bool caravanSent = tthis.Field("caravanSent").GetValue<bool>();
-
-            if (!caravanSent)
-            {
-                string genderpronounsubj = p.gender == Gender.Male ? "Prohe".Translate() : p.gender == Gender.Female ? "Proshe".Translate() : "Proit".Translate();
-                string genderpronounobj = p.gender == Gender.Male ? "ProhimObj".Translate() : p.gender == Gender.Female ? "ProherObj".Translate() : "ProitObj".Translate();
-                if (!__instance.StillHasColonist())
-                {
-                    Messages.Message("BillyCaravanLacksColonist".Translate(new object[] { p.NameStringShort, genderpronounsubj, genderpronounobj }), p, MessageTypeDefOf.NegativeEvent);
-                    __instance.lord.ReceiveMemo("BillyCaravanCriticalPawnLost");
-                }
-                else if (__instance.StillHasEnoughCapacity())
-                {
-
-                    Messages.Message("BillyCaravanLeavesWithout".Translate(new object[] { p.NameStringShort, genderpronounsubj, genderpronounobj }), p, MessageTypeDefOf.NegativeEvent);
-                }
-                else
-                {
-
-                    Messages.Message("BillyCaravanLacksCapacity".Translate(new object[] { p.NameStringShort, genderpronounsubj, genderpronounobj }), p, MessageTypeDefOf.NegativeEvent);
-                    __instance.lord.ReceiveMemo("BillyCaravanCriticalPawnLost");
-                }
-            }
-        }
-    }
 }

@@ -2,7 +2,7 @@
 <ModMetaData>
 	<name>Billy's Improved Caravan Formation</name>
 	<author>Billy Martin</author>
-	<targetVersion>0.18.1722</targetVersion>
+	<supportedVersions><li>1.0</li></supportedVersions>
 	<url>https://ludeon.com/forums/index.php?topic=33946.0</url>
-	<description>Colonists behave more intelligently during caravan formation, spending more time usefully gathering supplies and less time wandering around doing nothing.</description>
+	<description>Prevents caravan formation from hanging indefinitely when pawns repeatedly wander off while waiting for the caravan.</description>
 </ModMetaData>
